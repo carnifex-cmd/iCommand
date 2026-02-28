@@ -50,3 +50,22 @@ def load_config() -> Config:
         llm_api_key=data.get("llm_api_key"),
         llm_model=data.get("llm_model"),
     )
+
+
+def save_config(config: Config) -> None:
+    """Save config to ~/.icommand/config.toml."""
+    config_path = get_config_path()
+    data = {
+        "provider": config.provider,
+        "max_results": config.max_results,
+    }
+    # Only include LLM settings if they're set
+    if config.llm_provider:
+        data["llm_provider"] = config.llm_provider
+    if config.llm_api_key:
+        data["llm_api_key"] = config.llm_api_key
+    if config.llm_model:
+        data["llm_model"] = config.llm_model
+
+    with open(config_path, "w") as f:
+        toml.dump(data, f)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from icommand.config import get_config_path, get_icommand_dir, load_config
+from icommand.config import get_config_path, get_icommand_dir, load_config, save_config, Config
 from icommand.db import init_db
 from icommand.search import search as do_search
 from icommand.search import sync
@@ -204,3 +204,74 @@ def uninstall():
     click.echo()
     click.echo("  to finish, run:")
     click.echo("    pip uninstall icommand")
+
+
+@cli.command()
+@click.argument("key", required=False)
+@click.argument("value", required=False)
+@click.option("--reset", is_flag=True, help="Reset all settings to defaults")
+def config(key, value, reset):
+    """View or update configuration settings.
+    
+    Show current config:
+        icommand config
+    
+    Update a setting:
+        icommand config max_results 5
+    
+    Reset to defaults:
+        icommand config --reset
+    
+    Available settings:
+        max_results     Maximum number of search results (default: 10)
+        provider        Embedding provider: local, openai, anthropic, ollama (default: local)
+    """
+    config_path = get_config_path()
+    
+    if reset:
+        save_config(Config())
+        click.echo("  config   reset to defaults")
+        return
+    
+    # Show current config
+    if key is None:
+        cfg = load_config()
+        click.echo(f"Configuration file: {config_path}")
+        click.echo()
+        click.echo(f"  max_results = {cfg.max_results}")
+        click.echo(f"  provider    = {cfg.provider}")
+        if cfg.llm_provider:
+            click.echo(f"  llm_provider = {cfg.llm_provider}")
+        if cfg.llm_model:
+            click.echo(f"  llm_model    = {cfg.llm_model}")
+        return
+    
+    # Validate key
+    valid_keys = ["max_results", "provider"]
+    if key not in valid_keys:
+        click.echo(f"Error: Unknown setting '{key}'", err=True)
+        click.echo(f"Valid settings: {', '.join(valid_keys)}", err=True)
+        return
+    
+    # Get current config and update
+    cfg = load_config()
+    
+    if value is None:
+        # Show specific key
+        click.echo(f"  {key} = {getattr(cfg, key)}")
+        return
+    
+    # Update the value
+    if key == "max_results":
+        try:
+            value = int(value)
+            if value < 1 or value > 100:
+                click.echo("Error: max_results must be between 1 and 100", err=True)
+                return
+        except ValueError:
+            click.echo("Error: max_results must be a number", err=True)
+            return
+    
+    setattr(cfg, key, value)
+    save_config(cfg)
+    click.echo(f"  config   {key} = {value}")
