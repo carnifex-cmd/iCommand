@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icommand"
+version = "0.1.0"
+description = "AI-powered terminal command history search"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0",
+    "toml>=0.10",
+    "numpy>=1.24",
+    "onnxruntime>=1.16",
+    "tokenizers>=0.15",
+    "huggingface-hub>=0.20",
+]
+
+[project.scripts]
+icommand = "icommand.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["icommand*"]
+
+[tool.setuptools.package-data]
+icommand = ["hook.sh"]

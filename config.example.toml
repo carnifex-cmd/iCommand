@@ -1,0 +1,12 @@
+# icommand configuration
+
+# Embedding provider: "local" uses sentence-transformers (all-MiniLM-L6-v2)
+provider = "local"
+
+# Maximum number of search results to display
+max_results = 10
+
+# Uncomment to enable conversational search (coming soon)
+# llm_provider = "openai"       # openai | ollama | anthropic
+# llm_api_key = "sk-..."
+# llm_model = "gpt-4o-mini"
