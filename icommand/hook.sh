@@ -56,3 +56,6 @@ if [ -n "$ZSH_VERSION" ]; then
         precmd_functions+=(_icommand_precmd)
     fi
 fi
+
+# ic — shortcut to open the iCommand TUI
+alias ic='icommand tui'

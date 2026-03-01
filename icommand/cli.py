@@ -118,8 +118,9 @@ def init():
     click.echo()
     click.echo("  ready.")
     click.echo()
-    click.echo("  open a new terminal, run some commands, then:")
-    click.echo('    icommand search "<query>"')
+    click.echo("  open a new terminal, then:")
+    click.echo("    ic               — open the TUI and search your history")
+    click.echo('    icommand search "<query>"   — quick CLI search')
 
 
 @cli.command()
@@ -271,6 +272,9 @@ def uninstall():
                     continue
                 if skip_next and line.strip().startswith("source") and "hook.sh" in line:
                     skip_next = False
+                    continue
+                # Remove the alias line if it was somehow written directly to rc
+                if line.strip() in ("alias ic='icommand tui'", 'alias ic="icommand tui"'):
                     continue
                 skip_next = False
                 cleaned.append(line)
