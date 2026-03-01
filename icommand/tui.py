@@ -100,8 +100,10 @@ class ResultItem(ListItem):
 
     DEFAULT_CSS = """
     ResultItem {
-        height: 3;
-        padding: 0 2;
+        height: 2;
+        padding: 0 1;
+        margin: 0;
+        border-bottom: solid #222222;
     }
     ResultItem:focus-within {
         background: $surface-lighten-1;
@@ -113,10 +115,14 @@ class ResultItem(ListItem):
         text-style: bold;
         color: $text;
         height: 1;
+        padding: 0;
+        margin: 0;
     }
     ResultItem .meta {
         color: $text-muted;
         height: 1;
+        padding: 0;
+        margin: 0;
     }
     ResultItem .score {
         color: $text-disabled;
@@ -124,6 +130,8 @@ class ResultItem(ListItem):
     }
     ResultItem Horizontal {
         height: 1;
+        padding: 0;
+        margin: 0;
     }
     """
 
@@ -225,10 +233,12 @@ class ICommandApp(App):
         scrollbar-color: #333333;
         scrollbar-background: #111111;
         overflow-y: auto;
+        padding: 0;
     }
     #results-list > ListItem {
-        background: #111111;
-        height: auto;
+        padding: 0 1;
+        margin: 0;
+        height: 2;
     }
     #results-list > ListItem.--highlight {
         background: #1e1e1e;
