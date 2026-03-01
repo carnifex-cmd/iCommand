@@ -323,8 +323,9 @@ def config(key, value, reset):
         icommand config --reset
     
     Available settings:
-        max_results     Maximum number of search results (default: 10)
-        provider        Embedding provider: local, openai, anthropic, ollama (default: local)
+        max_results       Maximum number of search results (default: 10)
+        tui_max_results   Number of results to show in TUI (default: 5, max: 20)
+        provider          Embedding provider: local, openai, anthropic, ollama (default: local)
     """
     config_path = get_config_path()
     
@@ -338,8 +339,9 @@ def config(key, value, reset):
         cfg = load_config()
         click.echo(f"Configuration file: {config_path}")
         click.echo()
-        click.echo(f"  max_results = {cfg.max_results}")
-        click.echo(f"  provider    = {cfg.provider}")
+        click.echo(f"  max_results     = {cfg.max_results}")
+        click.echo(f"  tui_max_results = {cfg.tui_max_results}")
+        click.echo(f"  provider        = {cfg.provider}")
         if cfg.llm_provider:
             click.echo(f"  llm_provider = {cfg.llm_provider}")
         if cfg.llm_model:
@@ -347,7 +349,7 @@ def config(key, value, reset):
         return
     
     # Validate key
-    valid_keys = ["max_results", "provider"]
+    valid_keys = ["max_results", "tui_max_results", "provider"]
     if key not in valid_keys:
         click.echo(f"Error: Unknown setting '{key}'", err=True)
         click.echo(f"Valid settings: {', '.join(valid_keys)}", err=True)
@@ -362,14 +364,15 @@ def config(key, value, reset):
         return
     
     # Update the value
-    if key == "max_results":
+    if key in ("max_results", "tui_max_results"):
         try:
             value = int(value)
-            if value < 1 or value > 100:
-                click.echo("Error: max_results must be between 1 and 100", err=True)
+            max_val = 100 if key == "max_results" else 20
+            if value < 1 or value > max_val:
+                click.echo(f"Error: {key} must be between 1 and {max_val}", err=True)
                 return
         except ValueError:
-            click.echo("Error: max_results must be a number", err=True)
+            click.echo(f"Error: {key} must be a number", err=True)
             return
     
     setattr(cfg, key, value)

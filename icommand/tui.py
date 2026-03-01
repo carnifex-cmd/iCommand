@@ -432,6 +432,12 @@ class ICommandApp(App):
 
     def _update_results(self, results: list) -> None:
         """Rebuild the results list widget on the main thread."""
+        from icommand.config import load_config
+        
+        # Limit results to tui_max_results setting
+        config = load_config()
+        results = results[:config.tui_max_results]
+        
         self._results = results
         list_view = self.query_one("#results-list", ListView)
         empty_state = self.query_one("#empty-state", Static)

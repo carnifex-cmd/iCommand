@@ -28,6 +28,7 @@ class Config:
 
     provider: str = "local"
     max_results: int = 10
+    tui_max_results: int = 5  # Number of results shown in TUI
 
     # LLM settings for future conversational search
     llm_provider: Optional[str] = None
@@ -46,6 +47,7 @@ def load_config() -> Config:
     return Config(
         provider=data.get("provider", "local"),
         max_results=data.get("max_results", 10),
+        tui_max_results=data.get("tui_max_results", 5),
         llm_provider=data.get("llm_provider"),
         llm_api_key=data.get("llm_api_key"),
         llm_model=data.get("llm_model"),
@@ -58,6 +60,7 @@ def save_config(config: Config) -> None:
     data = {
         "provider": config.provider,
         "max_results": config.max_results,
+        "tui_max_results": config.tui_max_results,
     }
     # Only include LLM settings if they're set
     if config.llm_provider:

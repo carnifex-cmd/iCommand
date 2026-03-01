@@ -3,8 +3,11 @@
 # Embedding provider: "local" uses sentence-transformers (all-MiniLM-L6-v2)
 provider = "local"
 
-# Maximum number of search results to display
+# Maximum number of search results to display (for CLI search)
 max_results = 10
+
+# Number of results to display in TUI (default: 5)
+tui_max_results = 5
 
 # Uncomment to enable conversational search (coming soon)
 # llm_provider = "openai"       # openai | ollama | anthropic
