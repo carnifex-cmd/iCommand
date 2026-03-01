@@ -21,9 +21,10 @@ _icommand_capture() {
 
     _ICOMMAND_LAST_CMD="$cmd"
 
-    # Call the globally-installed icommand CLI in the background
-    # This works regardless of which Python version is active
-    icommand capture "$cmd" "$PWD" 2>/dev/null &
+    # Call the globally-installed icommand CLI in the background.
+    # Run in a subshell so zsh does not track it as a named job
+    # (prevents "[N] + done ..." notifications in the prompt).
+    (icommand capture "$cmd" "$PWD" 2>/dev/null &)
 }
 
 # --- Bash hook ---

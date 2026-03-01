@@ -166,12 +166,94 @@ def ask(question: str):
 
 
 @cli.command()
+def tui():
+    """Launch the interactive TUI for semantic history search."""
+    from icommand.tui import launch
+    launch()
+
+
+@cli.command(name="import-history")
+@click.option("--limit", default=5000, show_default=True, help="Max commands to import.")
+@click.option("--file", "history_file", default=None, help="Path to history file (auto-detected if omitted).")
+def import_history(limit: int, history_file):
+    """Import existing shell history into icommand's database."""
+    import os
+    from icommand.db import init_db, insert_command
+    from icommand.capture import capture_command
+
+    init_db()
+
+    # Auto-detect history file
+    if history_file:
+        paths = [Path(history_file)]
+    else:
+        paths = []
+        for candidate in ["~/.zsh_history", "~/.bash_history"]:
+            p = Path(candidate).expanduser()
+            if p.exists():
+                paths.append(p)
+
+    if not paths:
+        click.echo("  error    no history file found (~/.zsh_history or ~/.bash_history)", err=True)
+        return
+
+    total_imported = 0
+
+    for path in paths:
+        click.echo(f"  reading  {path}")
+        try:
+            raw = path.read_bytes()
+        except Exception as e:
+            click.echo(f"  error    could not read {path}: {e}", err=True)
+            continue
+
+        # Parse: zsh extended history lines look like `: 1234567890:0;command`
+        # bash history is just one command per line (no metadata)
+        commands = []
+        for line in raw.splitlines():
+            try:
+                text = line.decode("utf-8", errors="replace").strip()
+            except Exception:
+                continue
+            if not text:
+                continue
+            # zsh extended_history format: `: timestamp:elapsed;command`
+            if text.startswith(": ") and ";" in text:
+                text = text.split(";", 1)[1]
+            # Skip blank or comment-only lines
+            if not text or text.startswith("#"):
+                continue
+            commands.append(text)
+
+        # Deduplicate while preserving order, take last `limit` unique entries
+        seen: set = set()
+        unique: list = []
+        for cmd in reversed(commands):
+            if cmd not in seen:
+                seen.add(cmd)
+                unique.append(cmd)
+        unique = list(reversed(unique))[-limit:]
+
+        home = str(Path.home())
+        for cmd in unique:
+            try:
+                insert_command(cmd, home)
+                total_imported += 1
+            except Exception:
+                pass
+
+    click.echo(f"  imported {total_imported} commands")
+    click.echo()
+    click.echo("  run `icommand tui` to browse your history!")
+
+
+@cli.command()
 def uninstall():
-    """Remove icommand data and shell hooks from your system."""
+    """Fully remove icommand: data, shell hooks, and the binary."""
     icommand_dir = get_icommand_dir()
 
     if not click.confirm(
-        f"This will delete {icommand_dir} and remove shell hooks. Continue?"
+        "This will remove the icommand binary, all data, and shell hooks. Continue?"
     ):
         click.echo("Cancelled.")
         return
@@ -200,10 +282,28 @@ def uninstall():
         shutil.rmtree(icommand_dir)
         click.echo(f"  removed  {icommand_dir}")
 
+    # Remove the binary — prefer pipx, fall back to pip
+    import subprocess, sys
+    pipx = shutil.which("pipx")
+    if pipx:
+        click.echo("  binary   uninstalling via pipx…")
+        # Run in a subprocess so the binary can delete itself
+        subprocess.Popen(
+            [pipx, "uninstall", "icommand"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        click.echo("  binary   uninstalling via pip…")
+        subprocess.Popen(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "icommand"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     click.echo("  done.")
     click.echo()
-    click.echo("  to finish, run:")
-    click.echo("    pip uninstall icommand")
+    click.echo("  open a new terminal to apply shell changes.")
 
 
 @cli.command()
