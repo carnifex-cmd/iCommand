@@ -129,6 +129,7 @@ class ResultItem(ListItem):
     }
     ResultItem Horizontal {
         height: 1;
+        width: 1fr;
         padding: 0;
         margin: 0;
     }
@@ -140,24 +141,34 @@ class ResultItem(ListItem):
         directory: str,
         timestamp: str,
         similarity_score: float,
+        show_score: bool = True,
     ) -> None:
         super().__init__()
         self.cmd = command
         self.directory = directory
         self.timestamp = timestamp
         self.similarity_score = similarity_score
+        self.show_score = show_score
 
     def compose(self) -> ComposeResult:
-        pct = f"{self.similarity_score * 100:.0f}%"
-        bar = _score_bar(self.similarity_score)
         time_str = _relative_time(self.timestamp)
-        dir_str = _truncate(self.directory or "~", 40)
+        dir_str = _truncate(self.directory or "~", 30)
+        # Truncate command to fit typical terminal width (reserve padding)
+        cmd_str = _truncate(self.cmd, 120)
 
-        yield Static(self.cmd, classes="command")
-        yield Horizontal(
-            Static(dir_str, classes="meta"),
-            Static(f"{time_str}  {bar} {pct}", classes="score"),
-        )
+        yield Static(cmd_str, classes="command")
+        if self.show_score:
+            pct = f"{self.similarity_score * 100:.0f}%"
+            bar = _score_bar(self.similarity_score)
+            yield Horizontal(
+                Static(dir_str, classes="meta"),
+                Static(f"{time_str}  {bar} {pct}", classes="score"),
+            )
+        else:
+            yield Horizontal(
+                Static(dir_str, classes="meta"),
+                Static(time_str, classes="score"),
+            )
 
 
 class EmptyState(Static):
@@ -248,13 +259,14 @@ class ICommandApp(App):
     }
     ResultItem .meta {
         color: #666666;
+        width: 1fr;
     }
     ResultItem .score {
         color: #555555;
         text-align: right;
-        width: 1fr;
+        width: 22;
     }
-    Horizontal {
+    Screen > Horizontal {
         height: auto;
     }
 
@@ -457,6 +469,9 @@ class ICommandApp(App):
         empty_state.display = False
         list_view.display = True
 
+        # Hide scores when showing recent commands (empty search)
+        show_score = bool(self._query.strip())
+
         for result in results:
             list_view.append(
                 ResultItem(
@@ -464,6 +479,7 @@ class ICommandApp(App):
                     directory=result.directory,
                     timestamp=result.timestamp,
                     similarity_score=result.similarity_score,
+                    show_score=show_score,
                 )
             )
 
