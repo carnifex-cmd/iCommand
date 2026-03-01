@@ -103,7 +103,6 @@ class ResultItem(ListItem):
         height: 2;
         padding: 0 1;
         margin: 0;
-        border-bottom: solid #222222;
     }
     ResultItem:focus-within {
         background: $surface-lighten-1;
