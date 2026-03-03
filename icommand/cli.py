@@ -67,10 +67,11 @@ def cli():
 @cli.command(hidden=True)
 @click.argument("cmd")
 @click.argument("directory")
-def capture(cmd: str, directory: str):
+@click.option("--exit-code", "exit_code", default=None, type=int, help="Exit code of the command.")
+def capture(cmd: str, directory: str, exit_code):
     """Record a command (called by the shell hook — not for direct use)."""
     from icommand.capture import capture_command
-    capture_command(cmd, directory)
+    capture_command(cmd, directory, exit_code)
 
 
 @cli.command()

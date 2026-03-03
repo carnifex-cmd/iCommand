@@ -3,8 +3,10 @@
 # Source this file from your .bashrc or .zshrc:
 #   source /path/to/hook.sh
 
-# Track the last captured command to skip consecutive duplicates
+# Track state between preexec and precmd
 _ICOMMAND_LAST_CMD=""
+_ICOMMAND_PENDING_CMD=""
+_ICOMMAND_CMD_START=""
 
 _icommand_capture() {
     local cmd="$1"
@@ -21,9 +23,15 @@ _icommand_capture() {
 
     _ICOMMAND_LAST_CMD="$cmd"
 
-    # Call the globally-installed icommand CLI in the background
-    # This works regardless of which Python version is active
-    icommand capture "$cmd" "$PWD" 2>/dev/null &
+    # Call the globally-installed icommand CLI in the background.
+    # Run in a subshell so zsh does not track it as a named job
+    # (prevents "[N] + done ..." notifications in the prompt).
+    local exit_code="${2:-}"
+    if [ -n "$exit_code" ]; then
+        (icommand capture "$cmd" "$PWD" --exit-code "$exit_code" 2>/dev/null &)
+    else
+        (icommand capture "$cmd" "$PWD" 2>/dev/null &)
+    fi
 }
 
 # --- Bash hook ---
@@ -44,14 +52,38 @@ fi
 
 # --- Zsh hook ---
 if [ -n "$ZSH_VERSION" ]; then
-    _icommand_precmd() {
-        local last_cmd
-        last_cmd=$(fc -ln -1 2>/dev/null | sed 's/^[ ]*//')
-        _icommand_capture "$last_cmd"
+
+    # preexec: fires just BEFORE a command runs — receives the command as $1
+    _icommand_preexec() {
+        _ICOMMAND_PENDING_CMD="$1"
     }
 
-    # Add to precmd_functions array if not already there
-    if (( ${precmd_functions[(I)_icommand_precmd]} == 0 )); then
+    # precmd: fires just AFTER a command finishes, BEFORE the next prompt
+    _icommand_precmd() {
+        local exit_code=$?
+        local cmd
+
+        if [ -n "$_ICOMMAND_PENDING_CMD" ]; then
+            # Happy path: preexec fired and gave us the command directly
+            cmd="$_ICOMMAND_PENDING_CMD"
+        else
+            # Fallback: user pressed Enter on empty line or preexec didn't fire
+            cmd=$(fc -ln -1 2>/dev/null | sed 's/^[ ]*//')
+        fi
+
+        _ICOMMAND_PENDING_CMD=""
+
+        _icommand_capture "$cmd" "$exit_code"
+    }
+
+    # Register hooks if not already present
+    if [[ -z "${preexec_functions[(r)_icommand_preexec]}" ]]; then
+        preexec_functions+=(_icommand_preexec)
+    fi
+    if [[ -z "${precmd_functions[(r)_icommand_precmd]}" ]]; then
         precmd_functions+=(_icommand_precmd)
     fi
 fi
+
+# ic — shortcut to open the iCommand TUI
+alias ic='icommand tui'

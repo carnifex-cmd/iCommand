@@ -44,18 +44,23 @@ def init_db() -> None:
             conn.execute("ALTER TABLE commands ADD COLUMN embedding BLOB")
         except sqlite3.OperationalError:
             pass  # Column already exists
+        # Add exit_code column to existing databases that don't have it
+        try:
+            conn.execute("ALTER TABLE commands ADD COLUMN exit_code INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         conn.commit()
     finally:
         conn.close()
 
 
-def insert_command(command: str, directory: str) -> None:
+def insert_command(command: str, directory: str, exit_code: Optional[int] = None) -> None:
     """Insert a new command record into the database."""
     conn = _get_connection()
     try:
         conn.execute(
-            "INSERT INTO commands (command, directory) VALUES (?, ?)",
-            (command, directory),
+            "INSERT INTO commands (command, directory, exit_code) VALUES (?, ?, ?)",
+            (command, directory, exit_code),
         )
         conn.commit()
     finally:
