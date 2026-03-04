@@ -330,7 +330,7 @@ def config(key, value, reset):
     Available settings:
         max_results       Maximum number of search results (default: 10)
         tui_max_results   Number of results to show in TUI (default: 5, max: 20)
-        provider          Embedding provider: local, openai, anthropic, ollama (default: local)
+        provider          Embedding provider: local (Arctic Embed XS), openai, anthropic, ollama (default: local)
     """
     config_path = get_config_path()
     

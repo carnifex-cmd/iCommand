@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from icommand.config import load_config
-from icommand.db import get_all_embedded_commands, get_unembedded_commands, mark_embedded
+from icommand.db import (
+    clear_stale_embeddings,
+    get_all_embedded_commands,
+    get_unembedded_commands,
+    mark_embedded,
+)
 from icommand.embeddings import get_provider
 
 
@@ -23,13 +28,23 @@ class SearchResult:
     similarity_score: float
 
 
+# Model name stored alongside embeddings for migration detection.
+_EMBEDDING_MODEL = "arctic-xs"
+
+
 def sync() -> int:
     """Embed any unembedded commands and store them in SQLite.
+
+    On model change, clears all old embeddings first so they get re-embedded.
 
     Returns:
         The number of newly synced commands.
     """
     config = load_config()
+
+    # Clear stale embeddings if model has changed (e.g. MiniLM → Arctic XS)
+    clear_stale_embeddings(_EMBEDDING_MODEL)
+
     unembedded = get_unembedded_commands()
 
     if not unembedded:
@@ -37,12 +52,12 @@ def sync() -> int:
 
     provider = get_provider(config.provider)
     texts = [cmd["command"] for cmd in unembedded]
-    embeddings = provider.embed(texts)
+    embeddings = provider.embed_documents(texts)
 
     ids = [cmd["id"] for cmd in unembedded]
     embedding_arrays = [np.array(e, dtype=np.float32) for e in embeddings]
 
-    mark_embedded(ids, embedding_arrays)
+    mark_embedded(ids, embedding_arrays, _EMBEDDING_MODEL)
     return len(unembedded)
 
 
@@ -60,7 +75,7 @@ def search(query: str, max_results: int = 10) -> list[SearchResult]:
     provider = get_provider(config.provider)
 
     # Embed the query
-    query_vec = np.array(provider.embed([query])[0], dtype=np.float32)
+    query_vec = np.array(provider.embed_queries([query])[0], dtype=np.float32)
 
     # Load all stored embeddings
     commands = get_all_embedded_commands()

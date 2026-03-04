@@ -49,6 +49,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE commands ADD COLUMN exit_code INTEGER")
         except sqlite3.OperationalError:
             pass  # Column already exists
+        # Add embedding_model column for model migration tracking
+        try:
+            conn.execute("ALTER TABLE commands ADD COLUMN embedding_model TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         conn.commit()
     finally:
         conn.close()
@@ -79,7 +84,48 @@ def get_unembedded_commands() -> list[dict]:
         conn.close()
 
 
-def mark_embedded(ids: list[int], embeddings: list[np.ndarray]) -> None:
+def clear_stale_embeddings(current_model: str) -> int:
+    """Clear all embeddings if the model has changed.
+
+    If any existing embeddings were created by a different model (or have no
+    model tag — i.e. legacy MiniLM embeddings), wipe all embeddings so they
+    get re-embedded with the current model on next sync.
+
+    Args:
+        current_model: Name of the active embedding model.
+
+    Returns:
+        Number of rows cleared.
+    """
+    conn = _get_connection()
+    try:
+        # Check if any embedded rows have a different (or NULL) model
+        cursor = conn.execute(
+            """SELECT COUNT(*) FROM commands
+               WHERE embedding IS NOT NULL
+                 AND (embedding_model IS NULL OR embedding_model != ?)""",
+            (current_model,),
+        )
+        stale_count = cursor.fetchone()[0]
+
+        if stale_count == 0:
+            return 0
+
+        # Clear all embeddings for a clean re-embed
+        conn.execute(
+            """UPDATE commands
+               SET embedding = NULL,
+                   embedded_at = NULL,
+                   embedding_model = NULL
+               WHERE embedding IS NOT NULL"""
+        )
+        conn.commit()
+        return stale_count
+    finally:
+        conn.close()
+
+
+def mark_embedded(ids: list[int], embeddings: list[np.ndarray], model_name: str = "arctic-xs") -> None:
     """Mark the given command IDs as embedded and store their embedding vectors."""
     if not ids:
         return
@@ -90,9 +136,10 @@ def mark_embedded(ids: list[int], embeddings: list[np.ndarray]) -> None:
             conn.execute(
                 """UPDATE commands
                    SET embedded_at = datetime('now', 'localtime'),
-                       embedding = ?
+                       embedding = ?,
+                       embedding_model = ?
                    WHERE id = ?""",
-                (embedding.astype(np.float32).tobytes(), cmd_id),
+                (embedding.astype(np.float32).tobytes(), model_name, cmd_id),
             )
         conn.commit()
     finally:

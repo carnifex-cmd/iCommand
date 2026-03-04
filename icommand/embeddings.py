@@ -1,6 +1,7 @@
 """Embedding providers for icommand.
 
-Abstract base class with a local ONNX-based implementation using all-MiniLM-L6-v2.
+Abstract base class with a local ONNX-based implementation using
+Snowflake Arctic Embed XS — asymmetric retrieval with CLS pooling.
 No PyTorch required — uses onnxruntime for Python 3.9–3.13+ compatibility.
 """
 
@@ -18,32 +19,53 @@ os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
 
 # ONNX model identifier on Hugging Face Hub
-_ONNX_MODEL_REPO = "sentence-transformers/all-MiniLM-L6-v2"
+_ONNX_MODEL_REPO = "Snowflake/snowflake-arctic-embed-xs"
 _ONNX_MODEL_FILE = "onnx/model.onnx"
 _TOKENIZER_FILE = "tokenizer.json"
+
+# Asymmetric retrieval: queries get this prefix, documents don't.
+_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 class EmbeddingProvider(ABC):
     """Base class for all embedding providers."""
 
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of text strings into vectors.
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """Embed query texts (with retrieval prefix if applicable).
 
         Args:
-            texts: List of strings to embed.
+            texts: List of query strings to embed.
 
         Returns:
             List of embedding vectors, one per input text.
         """
         ...
 
+    @abstractmethod
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed document texts (no prefix).
+
+        Args:
+            texts: List of document strings to embed.
+
+        Returns:
+            List of embedding vectors, one per input text.
+        """
+        ...
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed texts — defaults to embed_documents for backward compat."""
+        return self.embed_documents(texts)
+
 
 class LocalProvider(EmbeddingProvider):
-    """Local embedding provider using all-MiniLM-L6-v2 via ONNX runtime.
+    """Local embedding provider using Snowflake Arctic Embed XS via ONNX.
 
-    - No PyTorch required
-    - Model downloads on first use (~90MB) via huggingface-hub
+    - Asymmetric retrieval: queries get a prefix, documents don't
+    - CLS token pooling with L2 normalization
+    - 384-dimension embeddings, 512 max token length
+    - No PyTorch required — downloads ONNX model on first use (~86MB)
     - Compatible with Python 3.9–3.13+
     """
 
@@ -72,24 +94,21 @@ class LocalProvider(EmbeddingProvider):
         )
         self._tokenizer = Tokenizer.from_file(tokenizer_path)
         self._tokenizer.enable_padding(
-            pad_id=0, pad_token="[PAD]", length=128
+            pad_id=0, pad_token="[PAD]", length=512
         )
-        self._tokenizer.enable_truncation(max_length=128)
+        self._tokenizer.enable_truncation(max_length=512)
 
-    def _mean_pool(self, token_embeddings: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
-        """Apply mean pooling to token embeddings."""
-        mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
-        sum_embeddings = np.sum(token_embeddings * mask_expanded, axis=1)
-        sum_mask = np.clip(mask_expanded.sum(axis=1), a_min=1e-9, a_max=None)
-        return sum_embeddings / sum_mask
+    def _cls_pool(self, token_embeddings: np.ndarray) -> np.ndarray:
+        """Extract CLS token (first token) from each sequence."""
+        return token_embeddings[:, 0, :]
 
     def _normalize(self, embeddings: np.ndarray) -> np.ndarray:
         """L2-normalize embeddings."""
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         return embeddings / np.clip(norms, a_min=1e-9, a_max=None)
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts using the local ONNX model."""
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        """Core embedding: tokenize → ONNX inference → CLS pool → normalize."""
         if self._session is None:
             self._load()
 
@@ -110,10 +129,19 @@ class LocalProvider(EmbeddingProvider):
 
         # outputs[0] = last hidden state: (batch, seq_len, hidden_size)
         token_embeddings = outputs[0]
-        pooled = self._mean_pool(token_embeddings, attention_mask)
+        pooled = self._cls_pool(token_embeddings)
         normalized = self._normalize(pooled)
 
         return normalized.tolist()
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """Embed query texts with retrieval prefix."""
+        prefixed = [f"{_QUERY_PREFIX}{t}" for t in texts]
+        return self._embed(prefixed)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Embed document texts as-is (no prefix)."""
+        return self._embed(texts)
 
 
 # --- Stub providers for future implementation ---
@@ -122,21 +150,30 @@ class LocalProvider(EmbeddingProvider):
 class OpenAIProvider(EmbeddingProvider):
     """OpenAI embedding provider — will use text-embedding-3-small."""
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        raise NotImplementedError("OpenAI embedding provider not yet implemented")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError("OpenAI embedding provider not yet implemented")
 
 
 class AnthropicProvider(EmbeddingProvider):
     """Anthropic embedding provider — will use Voyage AI embeddings."""
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        raise NotImplementedError("Anthropic embedding provider not yet implemented")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError("Anthropic embedding provider not yet implemented")
 
 
 class OllamaProvider(EmbeddingProvider):
     """Ollama embedding provider — will use local Ollama instance."""
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        raise NotImplementedError("Ollama embedding provider not yet implemented")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError("Ollama embedding provider not yet implemented")
 
 

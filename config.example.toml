@@ -1,6 +1,6 @@
 # icommand configuration
 
-# Embedding provider: "local" uses sentence-transformers (all-MiniLM-L6-v2)
+# Embedding provider: "local" uses Snowflake Arctic Embed XS via ONNX
 provider = "local"
 
 # Maximum number of search results to display (for CLI search)
