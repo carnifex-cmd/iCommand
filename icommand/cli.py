@@ -287,6 +287,18 @@ def uninstall():
         shutil.rmtree(icommand_dir)
         click.echo(f"  removed  {icommand_dir}")
 
+    # Remove cached ONNX models from HuggingFace hub (~86MB each)
+    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    _HF_MODEL_DIRS = [
+        "models--Snowflake--snowflake-arctic-embed-xs",      # current model
+        "models--sentence-transformers--all-MiniLM-L6-v2",   # legacy model
+    ]
+    for model_dir in _HF_MODEL_DIRS:
+        model_path = hf_cache / model_dir
+        if model_path.exists():
+            shutil.rmtree(model_path)
+            click.echo(f"  cache    removed {model_dir}")
+
     # Remove the binary — prefer pipx, fall back to pip
     import subprocess, sys
     pipx = shutil.which("pipx")
