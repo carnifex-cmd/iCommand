@@ -17,6 +17,7 @@ dependencies = [
     "huggingface-hub>=0.20",
     "textual>=0.50",
     "pyperclip>=1.8",
+    "faiss-cpu>=1.7.4",
 ]
 
 [project.scripts]

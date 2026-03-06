@@ -177,3 +177,71 @@ def get_all_commands() -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def get_commands_by_ids(ids: list[int]) -> list[dict]:
+    """Return command records for given IDs (without embedding blobs).
+    
+    Args:
+        ids: List of command IDs to fetch
+        
+    Returns:
+        List of command dicts in the same order as input IDs
+    """
+    if not ids:
+        return []
+        
+    conn = _get_connection()
+    try:
+        # Use parameterized query with placeholders
+        placeholders = ','.join('?' * len(ids))
+        cursor = conn.execute(
+            f"""SELECT id, command, directory, timestamp, embedded_at 
+                FROM commands 
+                WHERE id IN ({placeholders})""",
+            ids
+        )
+        # Build lookup by ID
+        rows_by_id = {row['id']: dict(row) for row in cursor.fetchall()}
+        # Return in order of input IDs
+        return [rows_by_id[i] for i in ids if i in rows_by_id]
+    finally:
+        conn.close()
+
+
+def get_recent_commands(limit: int = 20, offset: int = 0) -> list[dict]:
+    """Return recent command records with pagination.
+    
+    Args:
+        limit: Maximum number of commands to return
+        offset: Number of commands to skip
+        
+    Returns:
+        List of command dicts ordered by timestamp DESC
+    """
+    conn = _get_connection()
+    try:
+        cursor = conn.execute(
+            """SELECT id, command, directory, timestamp, embedded_at 
+               FROM commands 
+               ORDER BY timestamp DESC 
+               LIMIT ? OFFSET ?""",
+            (limit, offset)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_command_count() -> int:
+    """Return the total number of commands in the database.
+    
+    Returns:
+        Total count of commands
+    """
+    conn = _get_connection()
+    try:
+        cursor = conn.execute("SELECT COUNT(*) FROM commands")
+        return cursor.fetchone()[0]
+    finally:
+        conn.close()

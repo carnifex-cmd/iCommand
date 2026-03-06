@@ -282,7 +282,7 @@ def uninstall():
             rc_path.write_text("".join(cleaned))
             click.echo(f"  hook     removed from ~/{rc_name}")
 
-    # Remove the ~/.icommand directory
+    # Remove the ~/.icommand directory (includes SQLite DB and FAISS index)
     if icommand_dir.exists():
         shutil.rmtree(icommand_dir)
         click.echo(f"  removed  {icommand_dir}")

@@ -373,10 +373,11 @@ class ICommandApp(App):
 
     def _refresh_count(self) -> None:
         """Update the header command count display."""
-        from icommand.db import get_all_commands
+        from icommand.db import get_command_count
 
         try:
-            count = len(get_all_commands())
+            # Use count query instead of loading all commands
+            count = get_command_count()
         except Exception:
             count = 0
 
@@ -424,11 +425,12 @@ class ICommandApp(App):
 
     def _recent_commands(self) -> list:
         """Return the most recent commands as SearchResult-like objects."""
-        from icommand.db import get_all_commands
+        from icommand.db import get_recent_commands
         from icommand.search import SearchResult
 
         try:
-            rows = get_all_commands()
+            # Use pagination - only load 20 most recent commands
+            rows = get_recent_commands(limit=20)
             return [
                 SearchResult(
                     command=r["command"],
@@ -436,7 +438,7 @@ class ICommandApp(App):
                     timestamp=r["timestamp"],
                     similarity_score=1.0,
                 )
-                for r in rows[:20]
+                for r in rows
             ]
         except Exception:
             return []
