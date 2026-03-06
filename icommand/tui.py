@@ -209,6 +209,7 @@ class ICommandApp(App):
         border-bottom: solid #333333;
         color: #ffffff;
         text-style: bold;
+        content-align: center middle;
     }
     #header-right {
         color: #666666;
@@ -317,7 +318,7 @@ class ICommandApp(App):
     def compose(self) -> ComposeResult:
         # Header
         yield Horizontal(
-            Static("⚡  iCommand", id="header"),
+            Static("iCommand", id="header"),
             Static("", id="header-right"),
         )
 
