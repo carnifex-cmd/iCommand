@@ -203,7 +203,7 @@ class ICommandApp(App):
 
     /* ── Header ──────────────────────────────────── */
     #header {
-        height: 1;
+        height: 2;
         padding: 0 2;
         background: #111111;
         border-bottom: solid #333333;
@@ -218,7 +218,7 @@ class ICommandApp(App):
     /* ── Search bar ──────────────────────────────── */
     #search-bar {
         height: auto;
-        padding: 1 2;
+        padding: 0 2;
         background: #111111;
         border-bottom: solid #333333;
     }
