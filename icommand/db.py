@@ -54,20 +54,87 @@ def init_db() -> None:
             conn.execute("ALTER TABLE commands ADD COLUMN embedding_model TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
+        
+        # Create indexes for performance
+        # Index for recent commands query (used by TUI)
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_commands_timestamp ON commands(timestamp DESC)")
+        except sqlite3.OperationalError:
+            pass
+        
+        # Partial index for unembedded commands (much smaller than full index)
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_commands_unembedded ON commands(id) WHERE embedded_at IS NULL")
+        except sqlite3.OperationalError:
+            pass
+        
+        # Index for directory filtering
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_commands_directory ON commands(directory)")
+        except sqlite3.OperationalError:
+            pass
+        
+        # Create FTS5 virtual table for fast keyword search
+        try:
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS commands_fts USING fts5(
+                    command_text,
+                    content='commands',
+                    content_rowid='id'
+                )
+            """)
+        except sqlite3.OperationalError:
+            pass  # FTS5 not available or already exists
+        
+        # Create triggers to keep FTS table in sync
+        try:
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS commands_fts_insert 
+                AFTER INSERT ON commands
+                BEGIN
+                    INSERT INTO commands_fts(rowid, command_text) 
+                    VALUES (new.id, new.command);
+                END
+            """)
+        except sqlite3.OperationalError:
+            pass
+            
+        try:
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS commands_fts_delete
+                AFTER DELETE ON commands
+                BEGIN
+                    INSERT INTO commands_fts(commands_fts, rowid, command_text) 
+                    VALUES ('delete', old.id, old.command);
+                END
+            """)
+        except sqlite3.OperationalError:
+            pass
+        
         conn.commit()
     finally:
         conn.close()
 
 
-def insert_command(command: str, directory: str, exit_code: Optional[int] = None) -> None:
-    """Insert a new command record into the database."""
+def insert_command(command: str, directory: str, exit_code: Optional[int] = None) -> int:
+    """Insert a new command record into the database.
+    
+    Args:
+        command: The command text
+        directory: Working directory
+        exit_code: Exit code (optional)
+        
+    Returns:
+        The ID of the inserted command
+    """
     conn = _get_connection()
     try:
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO commands (command, directory, exit_code) VALUES (?, ?, ?)",
             (command, directory, exit_code),
         )
         conn.commit()
+        return cursor.lastrowid
     finally:
         conn.close()
 
@@ -243,5 +310,140 @@ def get_command_count() -> int:
     try:
         cursor = conn.execute("SELECT COUNT(*) FROM commands")
         return cursor.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def keyword_search(query: str, limit: int = 1000) -> list[int]:
+    """Search commands by keyword using FTS5.
+    
+    This is much faster than vector search for exact keyword matches,
+    and can be used as a pre-filter for semantic search.
+    
+    Args:
+        query: Search query string
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of command IDs matching the keywords
+    """
+    conn = _get_connection()
+    try:
+        # Check if FTS5 table exists
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='commands_fts'"
+        )
+        if not cursor.fetchone():
+            # FTS not available, return empty list
+            return []
+        
+        # Convert query to FTS5 syntax (AND between terms)
+        # Escape special characters and add wildcards for prefix matching
+        terms = query.strip().split()
+        if not terms:
+            return []
+            
+        # Build FTS5 query: term1* AND term2* AND ...
+        fts_terms = []
+        for term in terms:
+            # Escape quotes and add wildcard
+            escaped = term.replace('"', '""')
+            fts_terms.append(f'"{escaped}"*')
+        fts_query = ' AND '.join(fts_terms)
+        
+        # Use rowid to get the command IDs
+        cursor = conn.execute(
+            """SELECT rowid FROM commands_fts 
+               WHERE commands_fts MATCH ? 
+               ORDER BY rank
+               LIMIT ?""",
+            (fts_query, limit)
+        )
+        return [row[0] for row in cursor.fetchall()]
+    except sqlite3.OperationalError as e:
+        # FTS5 query error or not available
+        # Log error for debugging but return empty list gracefully
+        import logging
+        logging.debug(f"FTS search error: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_embedded_commands_by_ids(ids: list[int]) -> list[dict]:
+    """Return embedded command records for given IDs with their embeddings.
+    
+    Args:
+        ids: List of command IDs to fetch
+        
+    Returns:
+        List of command dicts with embeddings
+    """
+    if not ids:
+        return []
+        
+    conn = _get_connection()
+    try:
+        placeholders = ','.join('?' * len(ids))
+        cursor = conn.execute(
+            f"""SELECT id, command, directory, timestamp, embedding
+                FROM commands 
+                WHERE id IN ({placeholders}) AND embedding IS NOT NULL""",
+            ids
+        )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            if d["embedding"]:
+                d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def rebuild_fts_index() -> int:
+    """Rebuild the FTS5 index from scratch.
+    
+    Should be called after init_db() if FTS table is empty but commands exist.
+    
+    Returns:
+        Number of commands indexed
+    """
+    conn = _get_connection()
+    try:
+        # Check if FTS5 table exists
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='commands_fts'"
+        )
+        if not cursor.fetchone():
+            return 0
+        
+        # Check if FTS already has data
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM commands_fts")
+            count = cursor.fetchone()[0]
+            if count > 0:
+                return count  # Already indexed
+        except sqlite3.OperationalError:
+            pass
+        
+        # Clear existing FTS data
+        conn.execute("DELETE FROM commands_fts")
+        
+        # Rebuild from commands table
+        cursor = conn.execute("SELECT id, command FROM commands")
+        commands = cursor.fetchall()
+        
+        for cmd_id, command in commands:
+            conn.execute(
+                "INSERT INTO commands_fts(rowid, command_text) VALUES (?, ?)",
+                (cmd_id, command)
+            )
+        
+        conn.commit()
+        return len(commands)
+    except sqlite3.OperationalError:
+        return 0
     finally:
         conn.close()

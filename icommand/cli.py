@@ -77,12 +77,19 @@ def capture(cmd: str, directory: str, exit_code):
 @cli.command()
 def init():
     """Initialize icommand: set up database, config, and shell hook."""
+    from icommand.db import rebuild_fts_index
+    
     icommand_dir = get_icommand_dir()
     click.echo(f"  created  {icommand_dir}")
 
     # Initialize the database
     init_db()
     click.echo("  db       initialized")
+    
+    # Rebuild FTS index (for keyword search)
+    indexed = rebuild_fts_index()
+    if indexed > 0:
+        click.echo(f"  fts      indexed {indexed} commands")
 
     # Write default config if it doesn't exist
     config_path = get_config_path()
