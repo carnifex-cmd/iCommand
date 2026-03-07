@@ -353,17 +353,28 @@ class ICommandApp(App):
         self.query_one("#search-input", Input).focus()
         self._start_sync()
 
-    @work(thread=True)
     def _start_sync(self) -> None:
-        """Sync unembedded commands in a background thread, then load all."""
-        from icommand.search import sync
+        """Sync unembedded commands in a daemon background thread, then load all.
 
-        try:
-            synced = sync()
-        except Exception:
-            synced = 0
+        Uses a daemon thread (not Textual's @work) so that if the user quits
+        while sync is in progress, Python won't block on thread.join() at
+        interpreter shutdown — the terminal returns instantly.
+        """
+        import threading
 
-        self.call_from_thread(self._after_sync, synced)
+        def _do_sync() -> None:
+            from icommand.search import sync
+
+            try:
+                synced = sync()
+            except Exception:
+                synced = 0
+
+            # call_from_thread posts safely back onto Textual's event loop
+            self.call_from_thread(self._after_sync, synced)
+
+        t = threading.Thread(target=_do_sync, daemon=True, name="icommand-sync")
+        t.start()
 
     def _after_sync(self, synced: int) -> None:
         """Called on the main thread after sync completes."""

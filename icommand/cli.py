@@ -91,6 +91,19 @@ def init():
     if indexed > 0:
         click.echo(f"  fts      indexed {indexed} commands")
 
+    # Embed all commands so TUI search works immediately.
+    # This also pre-warms the ONNX model on first run (~30s, one-time cost).
+    from icommand.search import sync
+    click.echo("  embedding commands (first run may take ~30s)…", nl=False)
+    try:
+        synced = sync()
+        if synced > 0:
+            click.echo(f" {synced} embedded.")
+        else:
+            click.echo(" up to date.")
+    except Exception as e:
+        click.echo(f" warning: {e}", err=True)
+
     # Write default config if it doesn't exist
     config_path = get_config_path()
     if not config_path.exists():
