@@ -29,6 +29,10 @@ class Config:
     provider: str = "local"
     max_results: int = 10
     tui_max_results: int = 5  # Number of results shown in TUI
+    storage_soft_limit_mb: int = 1024
+    storage_hard_limit_mb: int = 2048
+    live_command_limit: int = 1_000_000
+    semantic_command_limit: int = 250_000
 
     # LLM settings for future conversational search
     llm_provider: Optional[str] = None
@@ -48,6 +52,10 @@ def load_config() -> Config:
         provider=data.get("provider", "local"),
         max_results=data.get("max_results", 10),
         tui_max_results=data.get("tui_max_results", 5),
+        storage_soft_limit_mb=data.get("storage_soft_limit_mb", 1024),
+        storage_hard_limit_mb=data.get("storage_hard_limit_mb", 2048),
+        live_command_limit=data.get("live_command_limit", 1_000_000),
+        semantic_command_limit=data.get("semantic_command_limit", 250_000),
         llm_provider=data.get("llm_provider"),
         llm_api_key=data.get("llm_api_key"),
         llm_model=data.get("llm_model"),
@@ -61,6 +69,10 @@ def save_config(config: Config) -> None:
         "provider": config.provider,
         "max_results": config.max_results,
         "tui_max_results": config.tui_max_results,
+        "storage_soft_limit_mb": config.storage_soft_limit_mb,
+        "storage_hard_limit_mb": config.storage_hard_limit_mb,
+        "live_command_limit": config.live_command_limit,
+        "semantic_command_limit": config.semantic_command_limit,
     }
     # Only include LLM settings if they're set
     if config.llm_provider:

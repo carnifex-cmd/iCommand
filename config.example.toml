@@ -9,6 +9,14 @@ max_results = 10
 # Number of results to display in TUI (default: 5)
 tui_max_results = 5
 
+# Soft and hard caps for all local icommand data under ~/.icommand
+storage_soft_limit_mb = 1024
+storage_hard_limit_mb = 2048
+
+# Maximum commands retained locally and maximum commands kept semantically indexed
+live_command_limit = 1000000
+semantic_command_limit = 250000
+
 # Uncomment to enable conversational search (coming soon)
 # llm_provider = "openai"       # openai | ollama | anthropic
 # llm_api_key = "sk-..."

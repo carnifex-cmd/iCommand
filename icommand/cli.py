@@ -58,6 +58,28 @@ def _get_hook_source_line() -> str:
 _HOOK_MARKER = "# icommand: AI-powered command history search"
 
 
+def _format_bytes(total_bytes: int) -> str:
+    """Render bytes in a compact human-readable form."""
+    value = float(total_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value /= 1024
+    return f"{total_bytes}B"
+
+
+def _echo_sync_status(result) -> None:
+    """Show retained/indexed counts plus local storage usage."""
+    click.echo(
+        "  state    "
+        f"{result.retained_commands} retained"
+        f"  ·  {result.indexed_commands} indexed"
+        f"  ·  {_format_bytes(result.storage_usage_bytes)} local"
+    )
+    for message in result.messages:
+        click.echo(f"  notice   {message}")
+
+
 @click.group()
 def cli():
     """icommand — AI-powered terminal command history search."""
@@ -96,11 +118,12 @@ def init():
     from icommand.search import sync
     click.echo("  embedding commands (first run may take ~30s)…", nl=False)
     try:
-        synced = sync()
-        if synced > 0:
-            click.echo(f" {synced} embedded.")
+        sync_result = sync()
+        if sync_result.synced_commands > 0:
+            click.echo(f" {sync_result.synced_commands} embedded.")
         else:
             click.echo(" up to date.")
+        _echo_sync_status(sync_result)
     except Exception as e:
         click.echo(f" warning: {e}", err=True)
 
@@ -112,7 +135,19 @@ def init():
             shutil.copy(example_config, config_path)
         else:
             config_path.write_text(
-                '# icommand configuration\nprovider = "local"\nmax_results = 10\n'
+                '\n'.join(
+                    [
+                        '# icommand configuration',
+                        'provider = "local"',
+                        'max_results = 10',
+                        'tui_max_results = 5',
+                        'storage_soft_limit_mb = 1024',
+                        'storage_hard_limit_mb = 2048',
+                        'live_command_limit = 1000000',
+                        'semantic_command_limit = 250000',
+                        '',
+                    ]
+                )
             )
         click.echo(f"  config   {config_path}")
     else:
@@ -151,11 +186,15 @@ def search(query: str):
     config = load_config()
 
     click.echo("syncing...", nl=False)
-    synced = sync()
-    if synced > 0:
-        click.echo(f" {synced} command{'s' if synced != 1 else ''} synced.")
+    sync_result = sync()
+    if sync_result.synced_commands > 0:
+        click.echo(
+            f" {sync_result.synced_commands} command"
+            f"{'s' if sync_result.synced_commands != 1 else ''} synced."
+        )
     else:
         click.echo(" up to date.")
+    _echo_sync_status(sync_result)
 
     click.echo()
 
@@ -166,7 +205,7 @@ def search(query: str):
         click.echo("Tip: Make sure you have some command history captured first.")
         return
 
-    click.echo(f"{len(results)} result{'s' if len(results) != 1 else ''}:\n")
+        click.echo(f"{len(results)} result{'s' if len(results) != 1 else ''}:\n")
 
     for i, result in enumerate(results, 1):
         time_ago = _relative_time(result.timestamp)
@@ -363,6 +402,10 @@ def config(key, value, reset):
         max_results       Maximum number of search results (default: 10)
         tui_max_results   Number of results to show in TUI (default: 5, max: 20)
         provider          Embedding provider: local (Arctic Embed XS), openai, anthropic, ollama (default: local)
+        storage_soft_limit_mb   Soft cap for ~/.icommand data (default: 1024)
+        storage_hard_limit_mb   Hard cap for ~/.icommand data (default: 2048)
+        live_command_limit      Max commands retained locally (default: 1000000)
+        semantic_command_limit  Max commands kept semantically indexed (default: 250000)
     """
     config_path = get_config_path()
     
@@ -379,6 +422,10 @@ def config(key, value, reset):
         click.echo(f"  max_results     = {cfg.max_results}")
         click.echo(f"  tui_max_results = {cfg.tui_max_results}")
         click.echo(f"  provider        = {cfg.provider}")
+        click.echo(f"  storage_soft_limit_mb = {cfg.storage_soft_limit_mb}")
+        click.echo(f"  storage_hard_limit_mb = {cfg.storage_hard_limit_mb}")
+        click.echo(f"  live_command_limit    = {cfg.live_command_limit}")
+        click.echo(f"  semantic_command_limit = {cfg.semantic_command_limit}")
         if cfg.llm_provider:
             click.echo(f"  llm_provider = {cfg.llm_provider}")
         if cfg.llm_model:
@@ -386,7 +433,15 @@ def config(key, value, reset):
         return
     
     # Validate key
-    valid_keys = ["max_results", "tui_max_results", "provider"]
+    valid_keys = [
+        "max_results",
+        "tui_max_results",
+        "provider",
+        "storage_soft_limit_mb",
+        "storage_hard_limit_mb",
+        "live_command_limit",
+        "semantic_command_limit",
+    ]
     if key not in valid_keys:
         click.echo(f"Error: Unknown setting '{key}'", err=True)
         click.echo(f"Valid settings: {', '.join(valid_keys)}", err=True)
@@ -401,17 +456,46 @@ def config(key, value, reset):
         return
     
     # Update the value
-    if key in ("max_results", "tui_max_results"):
+    if key in (
+        "max_results",
+        "tui_max_results",
+        "storage_soft_limit_mb",
+        "storage_hard_limit_mb",
+        "live_command_limit",
+        "semantic_command_limit",
+    ):
         try:
             value = int(value)
-            max_val = 100 if key == "max_results" else 20
-            if value < 1 or value > max_val:
-                click.echo(f"Error: {key} must be between 1 and {max_val}", err=True)
-                return
+            if key == "max_results":
+                if value < 1 or value > 100:
+                    click.echo("Error: max_results must be between 1 and 100", err=True)
+                    return
+            elif key == "tui_max_results":
+                if value < 1 or value > 20:
+                    click.echo("Error: tui_max_results must be between 1 and 20", err=True)
+                    return
+            elif key in ("storage_soft_limit_mb", "storage_hard_limit_mb"):
+                if value < 128:
+                    click.echo(f"Error: {key} must be at least 128", err=True)
+                    return
+            elif key == "live_command_limit":
+                if value < 10_000:
+                    click.echo("Error: live_command_limit must be at least 10000", err=True)
+                    return
+            elif key == "semantic_command_limit":
+                if value < 1_000:
+                    click.echo("Error: semantic_command_limit must be at least 1000", err=True)
+                    return
         except ValueError:
             click.echo(f"Error: {key} must be a number", err=True)
             return
     
     setattr(cfg, key, value)
+    if cfg.storage_soft_limit_mb > cfg.storage_hard_limit_mb:
+        click.echo("Error: storage_soft_limit_mb must be <= storage_hard_limit_mb", err=True)
+        return
+    if cfg.semantic_command_limit > cfg.live_command_limit:
+        click.echo("Error: semantic_command_limit must be <= live_command_limit", err=True)
+        return
     save_config(cfg)
     click.echo(f"  config   {key} = {value}")

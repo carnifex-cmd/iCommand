@@ -308,6 +308,7 @@ class ICommandApp(App):
     _query: reactive[str] = reactive("", init=False)
     _results: reactive[list] = reactive([], init=False)
     _command_count: reactive[int] = reactive(0, init=False)
+    _indexed_count: reactive[int] = reactive(0, init=False)
     _syncing: reactive[bool] = reactive(True, init=False)
     _debounce_task: Optional[asyncio.Task] = None
 
@@ -366,35 +367,56 @@ class ICommandApp(App):
             from icommand.search import sync
 
             try:
-                synced = sync()
+                result = sync()
             except Exception:
-                synced = 0
+                result = None
 
             # call_from_thread posts safely back onto Textual's event loop
-            self.call_from_thread(self._after_sync, synced)
+            self.call_from_thread(self._after_sync, result)
 
         t = threading.Thread(target=_do_sync, daemon=True, name="icommand-sync")
         t.start()
 
-    def _after_sync(self, synced: int) -> None:
+    def _after_sync(self, sync_result) -> None:
         """Called on the main thread after sync completes."""
         self._syncing = False
-        self._refresh_count()
+        self._refresh_count(sync_result)
+        if sync_result is not None:
+            for message in sync_result.messages[:2]:
+                self.notify(message, timeout=3.0)
         # Show initial results (browse mode with empty query)
         self._run_search(self._query)
 
-    def _refresh_count(self) -> None:
+    def _refresh_count(self, sync_result=None) -> None:
         """Update the header command count display."""
         from icommand.db import get_command_count
+        from icommand.vector_index import get_vector_index
 
         try:
-            # Use count query instead of loading all commands
-            count = get_command_count()
+            count = (
+                sync_result.retained_commands
+                if sync_result is not None
+                else get_command_count()
+            )
         except Exception:
             count = 0
 
+        try:
+            indexed_count = (
+                sync_result.indexed_commands
+                if sync_result is not None
+                else get_vector_index().get_indexed_count()
+            )
+        except Exception:
+            indexed_count = 0
+
         self._command_count = count
-        label = "syncing…" if self._syncing else f"{count} commands indexed"
+        self._indexed_count = indexed_count
+        label = (
+            "syncing…"
+            if self._syncing
+            else f"{count} retained · {indexed_count} indexed"
+        )
         self.query_one("#header-right", Static).update(label)
 
     # ------------------------------------------------------------------
