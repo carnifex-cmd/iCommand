@@ -25,9 +25,53 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Input, Label, ListItem, ListView, Static
+
+
+TUI_FETCH_LIMIT = 100
+_FOOTER_BASE = (
+    "[#aaaaaa]↑↓[/] nav   "
+    "[#aaaaaa]⏎[/] select & copy   "
+    "[#aaaaaa]Tab[/] switch focus   "
+    "[#aaaaaa]Esc / q[/] quit"
+)
+
+
+class SyncCompleted(Message):
+    """Posted when the background sync finishes."""
+
+    def __init__(self, sync_result) -> None:
+        super().__init__()
+        self.sync_result = sync_result
+
+
+class ResultsFetched(Message):
+    """Posted when a background results fetch finishes."""
+
+    def __init__(
+        self,
+        generation: int,
+        query: str,
+        mode: str,
+        results: list,
+        has_more: bool,
+        append: bool,
+        desired_visible_limit: int,
+        preferred_index: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        self.generation = generation
+        self.query = query
+        self.mode = mode
+        self.results = results
+        self.has_more = has_more
+        self.append = append
+        self.desired_visible_limit = desired_visible_limit
+        self.preferred_index = preferred_index
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +227,41 @@ class EmptyState(Static):
     """
 
 
+class ResultsListView(ListView):
+    """ListView that asks the app for more rows when moving past the end."""
+
+    class LoadMoreRequested(Message):
+        """Posted when the user presses down on the last visible row."""
+
+        def __init__(self, list_view: "ResultsListView", index: int) -> None:
+            super().__init__()
+            self.list_view = list_view
+            self.index = index
+
+        @property
+        def control(self) -> "ResultsListView":
+            return self.list_view
+
+    BINDINGS = [
+        Binding("enter", "select_cursor", "Select", show=False),
+        Binding("up,k", "cursor_up", "Cursor up", show=False),
+        Binding("down,j", "cursor_down", "Cursor down", show=False),
+    ]
+
+    def action_cursor_down(self) -> None:
+        """Move down, or request more rows if already on the last visible item."""
+        if self.index is None:
+            if self._nodes:
+                self.index = 0
+            return
+
+        if self.index >= len(self._nodes) - 1:
+            self.post_message(self.LoadMoreRequested(self, self.index))
+            return
+
+        super().action_cursor_down()
+
+
 # ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
@@ -295,13 +374,13 @@ class ICommandApp(App):
     """
 
     BINDINGS = [
-        Binding("escape", "quit", "Quit", show=False),
+        Binding("escape", "quit", "Quit", show=False, priority=True),
         Binding("q", "quit", "Quit", show=False),
         Binding("up,k", "move_up", "Up", show=False),
         Binding("down,j", "move_down", "Down", show=False),
         Binding("enter", "select", "Select & Copy", show=False),
         Binding("tab", "toggle_focus", "Toggle Focus", show=False),
-        Binding("ctrl+c", "quit", "Quit", show=False),
+        Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
     ]
 
     # Reactive state
@@ -332,15 +411,12 @@ class ICommandApp(App):
 
         # Results area
         with Vertical(id="results-container"):
-            yield ListView(id="results-list")
+            yield ResultsListView(id="results-list")
             yield Static("", id="empty-state")
 
         # Footer
         yield Static(
-            "[#aaaaaa]↑↓[/] nav   "
-            "[#aaaaaa]⏎[/] select & copy   "
-            "[#aaaaaa]Tab[/] switch focus   "
-            "[#aaaaaa]Esc / q[/] quit",
+            _FOOTER_BASE,
             id="footer",
             markup=True,
         )
@@ -351,6 +427,13 @@ class ICommandApp(App):
 
     def on_mount(self) -> None:
         """Focus the search input and kick off the initial sync."""
+        self._all_results: list = []
+        self._visible_limit = 0
+        self._has_more_results = False
+        self._loading_more = False
+        self._closing = False
+        self._request_generation = 0
+        self._result_mode = "recent"
         self.query_one("#search-input", Input).focus()
         self._start_sync()
 
@@ -371,14 +454,20 @@ class ICommandApp(App):
             except Exception:
                 result = None
 
-            # call_from_thread posts safely back onto Textual's event loop
-            self.call_from_thread(self._after_sync, result)
+            self.post_message(SyncCompleted(result))
 
         t = threading.Thread(target=_do_sync, daemon=True, name="icommand-sync")
         t.start()
 
+    @on(SyncCompleted)
+    def on_sync_completed(self, event: SyncCompleted) -> None:
+        """Handle sync completion on the main thread."""
+        self._after_sync(event.sync_result)
+
     def _after_sync(self, sync_result) -> None:
         """Called on the main thread after sync completes."""
+        if self._closing or not self.is_mounted:
+            return
         self._syncing = False
         self._refresh_count(sync_result)
         if sync_result is not None:
@@ -389,6 +478,8 @@ class ICommandApp(App):
 
     def _refresh_count(self, sync_result=None) -> None:
         """Update the header command count display."""
+        if self._closing or not self.is_mounted:
+            return
         from icommand.db import get_command_count
         from icommand.vector_index import get_vector_index
 
@@ -417,7 +508,10 @@ class ICommandApp(App):
             if self._syncing
             else f"{count} retained · {indexed_count} indexed"
         )
-        self.query_one("#header-right", Static).update(label)
+        try:
+            self.query_one("#header-right", Static).update(label)
+        except NoMatches:
+            return
 
     # ------------------------------------------------------------------
     # Search
@@ -439,59 +533,136 @@ class ICommandApp(App):
         await asyncio.sleep(0.3)
         self._run_search(query)
 
-    @work(thread=True)
     def _run_search(self, query: str) -> None:
-        """Run semantic search in a background thread."""
-        from icommand.search import search as do_search
+        """Start a new paged search or recent-history load."""
+        if self._closing or not self.is_mounted:
+            return
+        generation = self._request_generation + 1
+        self._request_generation = generation
+        self._result_mode = "search" if query.strip() else "recent"
+        self._loading_more = False
+        self._has_more_results = False
+        self._all_results = []
+        self._results = []
+        self._visible_limit = self._page_size()
+        try:
+            self.query_one("#results-list", ListView).index = None
+        except NoMatches:
+            return
+        self._render_results()
+
+        if self._result_mode == "search":
+            self._fetch_results(
+                query=query,
+                generation=generation,
+                mode="search",
+                limit=min(self._page_size(), TUI_FETCH_LIMIT),
+                offset=0,
+                append=False,
+                desired_visible_limit=self._page_size(),
+            )
+        else:
+            self._fetch_results(
+                query=query,
+                generation=generation,
+                mode="recent",
+                limit=min(self._page_size(), TUI_FETCH_LIMIT),
+                offset=0,
+                append=False,
+                desired_visible_limit=self._page_size(),
+            )
+
+    @work(thread=True)
+    def _fetch_results(
+        self,
+        query: str,
+        generation: int,
+        mode: str,
+        limit: int,
+        offset: int,
+        append: bool,
+        desired_visible_limit: int,
+        preferred_index: Optional[int] = None,
+    ) -> None:
+        """Fetch one results page in the background and post it to the UI thread."""
+        from icommand.db import get_recent_commands
+        from icommand.search import SearchResult, search as do_search
 
         try:
-            if query.strip():
-                from icommand.config import load_config
-                config = load_config()
-                results = do_search(query, config.max_results)
+            if mode == "search":
+                results = do_search(query, limit)
+                has_more = len(results) >= limit and limit < TUI_FETCH_LIMIT
             else:
-                # Empty query: show most recent commands
-                results = self._recent_commands()
+                rows = get_recent_commands(limit=limit, offset=offset)
+                results = [
+                    SearchResult(
+                        command=row["command"],
+                        directory=row.get("directory") or "",
+                        timestamp=row["timestamp"],
+                        similarity_score=1.0,
+                    )
+                    for row in rows
+                ]
+                total_loaded = offset + len(results)
+                has_more = len(results) >= limit and total_loaded < TUI_FETCH_LIMIT
         except Exception:
             results = []
+            has_more = False
 
-        self.call_from_thread(self._update_results, results)
+        self.post_message(
+            ResultsFetched(
+                generation=generation,
+                query=query,
+                mode=mode,
+                results=results,
+                has_more=has_more,
+                append=append,
+                desired_visible_limit=desired_visible_limit,
+                preferred_index=preferred_index,
+            )
+        )
 
-    def _recent_commands(self) -> list:
-        """Return the most recent commands as SearchResult-like objects."""
-        from icommand.db import get_recent_commands
-        from icommand.search import SearchResult
-
-        try:
-            # Use pagination - only load 20 most recent commands
-            rows = get_recent_commands(limit=20)
-            return [
-                SearchResult(
-                    command=r["command"],
-                    directory=r.get("directory") or "",
-                    timestamp=r["timestamp"],
-                    similarity_score=1.0,
-                )
-                for r in rows
-            ]
-        except Exception:
-            return []
-
-    def _update_results(self, results: list) -> None:
-        """Rebuild the results list widget on the main thread."""
+    def _page_size(self) -> int:
+        """Return the TUI page size from config."""
         from icommand.config import load_config
-        
-        # Limit results to tui_max_results setting
-        config = load_config()
-        results = results[:config.tui_max_results]
-        
-        self._results = results
-        list_view = self.query_one("#results-list", ListView)
-        empty_state = self.query_one("#empty-state", Static)
+
+        return max(1, load_config().tui_max_results)
+
+    def _can_load_more(self) -> bool:
+        """Return whether more rows can be revealed or fetched."""
+        return bool(self._results) and (
+            self._visible_limit < len(self._all_results) or self._has_more_results
+        )
+
+    def _refresh_footer(self) -> None:
+        """Update the footer hint based on load-more availability."""
+        if self._closing or not self.is_mounted:
+            return
+        footer = _FOOTER_BASE
+        if self._can_load_more():
+            footer += "   [#aaaaaa]↓[/] load more"
+        try:
+            self.query_one("#footer", Static).update(footer)
+        except NoMatches:
+            return
+
+    def _render_results(self, preferred_index: Optional[int] = None) -> None:
+        """Rebuild the visible results list from the loaded result set."""
+        if self._closing or not self.is_mounted:
+            return
+        try:
+            list_view = self.query_one("#results-list", ListView)
+            empty_state = self.query_one("#empty-state", Static)
+        except NoMatches:
+            return
+        previous_index = list_view.index
 
         list_view.clear()
 
-        if not results:
+        visible_results = self._all_results[: self._visible_limit]
+        self._results = visible_results
+
+        if not visible_results:
             empty_label = (
                 "No results. Try a different query."
                 if self._query.strip()
@@ -500,6 +671,8 @@ class ICommandApp(App):
             empty_state.update(empty_label)
             empty_state.display = True
             list_view.display = False
+            list_view.index = None
+            self._refresh_footer()
             return
 
         empty_state.display = False
@@ -508,7 +681,7 @@ class ICommandApp(App):
         # Hide scores when showing recent commands (empty search)
         show_score = bool(self._query.strip())
 
-        for result in results:
+        for result in visible_results:
             list_view.append(
                 ResultItem(
                     command=result.command,
@@ -519,12 +692,103 @@ class ICommandApp(App):
                 )
             )
 
+        target_index: Optional[int] = preferred_index
+        if target_index is None and previous_index is not None:
+            target_index = previous_index
+        if target_index is not None:
+            list_view.index = min(target_index, len(visible_results) - 1)
+
+        self._refresh_footer()
+
+    @on(ResultsFetched)
+    def on_results_fetched(self, event: ResultsFetched) -> None:
+        """Apply fetched results on the main thread."""
+        self._apply_fetched_results(event)
+
+    def _apply_fetched_results(self, response: ResultsFetched) -> None:
+        """Apply a background fetch response if it still matches the active query."""
+        if self._closing or not self.is_mounted:
+            return
+        if response.generation != self._request_generation:
+            return
+        if response.query != self._query:
+            return
+        if response.mode != self._result_mode:
+            return
+
+        self._loading_more = False
+        if response.append:
+            self._all_results.extend(response.results)
+        else:
+            self._all_results = list(response.results)
+
+        self._visible_limit = min(
+            response.desired_visible_limit,
+            len(self._all_results),
+        )
+        self._has_more_results = response.has_more and len(self._all_results) < TUI_FETCH_LIMIT
+        self._render_results(preferred_index=response.preferred_index)
+
+    def _request_more_results(self, current_index: int) -> None:
+        """Reveal more results, fetching another page if needed."""
+        if self._closing or not self.is_mounted:
+            return
+        if self._loading_more:
+            return
+
+        page_size = self._page_size()
+        if self._visible_limit < len(self._all_results):
+            self._visible_limit = min(
+                self._visible_limit + page_size,
+                len(self._all_results),
+            )
+            self._render_results(preferred_index=current_index + 1)
+            return
+
+        if not self._has_more_results:
+            return
+
+        self._loading_more = True
+        desired_visible_limit = min(self._visible_limit + page_size, TUI_FETCH_LIMIT)
+        preferred_index = current_index + 1
+
+        if self._result_mode == "search":
+            next_limit = min(len(self._all_results) + page_size, TUI_FETCH_LIMIT)
+            self._fetch_results(
+                query=self._query,
+                generation=self._request_generation,
+                mode="search",
+                limit=next_limit,
+                offset=0,
+                append=False,
+                desired_visible_limit=desired_visible_limit,
+                preferred_index=preferred_index,
+            )
+        else:
+            remaining = TUI_FETCH_LIMIT - len(self._all_results)
+            next_limit = min(page_size, remaining)
+            if next_limit <= 0:
+                self._loading_more = False
+                self._has_more_results = False
+                self._refresh_footer()
+                return
+            self._fetch_results(
+                query=self._query,
+                generation=self._request_generation,
+                mode="recent",
+                limit=next_limit,
+                offset=len(self._all_results),
+                append=True,
+                desired_visible_limit=desired_visible_limit,
+                preferred_index=preferred_index,
+            )
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
     def action_move_up(self) -> None:
-        list_view = self.query_one("#results-list", ListView)
+        list_view = self.query_one("#results-list", ResultsListView)
         if not list_view.has_focus:
             list_view.focus()
         if list_view.index is None:
@@ -533,17 +797,20 @@ class ICommandApp(App):
             list_view.index -= 1
 
     def action_move_down(self) -> None:
-        list_view = self.query_one("#results-list", ListView)
+        list_view = self.query_one("#results-list", ResultsListView)
         if not list_view.has_focus:
             list_view.focus()
         if list_view.index is None:
-            list_view.index = 0
+            if self._results:
+                list_view.index = 0
         elif self._results and list_view.index < len(self._results) - 1:
             list_view.index += 1
+        elif self._results:
+            self._request_more_results(list_view.index)
 
     def action_toggle_focus(self) -> None:
         search = self.query_one("#search-input", Input)
-        list_view = self.query_one("#results-list", ListView)
+        list_view = self.query_one("#results-list", ResultsListView)
         if search.has_focus:
             list_view.focus()
         else:
@@ -571,7 +838,19 @@ class ICommandApp(App):
 
         self.exit(command)
 
+    @on(ResultsListView.LoadMoreRequested)
+    def on_results_list_view_load_more_requested(
+        self, event: ResultsListView.LoadMoreRequested
+    ) -> None:
+        """Expand the result set when the focused list hits the last visible row."""
+        self._request_more_results(event.index)
+
     def action_quit(self) -> None:
+        self._closing = True
+        self._request_generation += 1
+        if self._debounce_task and not self._debounce_task.done():
+            self._debounce_task.cancel()
+        self.workers.cancel_all()
         self.exit()
 
     # ------------------------------------------------------------------

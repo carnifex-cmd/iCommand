@@ -7,6 +7,7 @@
 _ICOMMAND_LAST_CMD=""
 _ICOMMAND_PENDING_CMD=""
 _ICOMMAND_CMD_START=""
+_ICOMMAND_LAST_HISTNO=""
 
 _icommand_capture() {
     local cmd="$1"
@@ -36,11 +37,29 @@ _icommand_capture() {
 
 # --- Bash hook ---
 if [ -n "$BASH_VERSION" ]; then
+    _icommand_seed_bash_history_state() {
+        local last_history_line histno
+        last_history_line=$(HISTTIMEFORMAT='' history 1 2>/dev/null)
+        histno=$(printf '%s\n' "$last_history_line" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+        _ICOMMAND_LAST_HISTNO="$histno"
+    }
+
     _icommand_prompt_command() {
-        local last_cmd
-        last_cmd=$(HISTTIMEFORMAT='' history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
+        local last_history_line histno last_cmd
+        last_history_line=$(HISTTIMEFORMAT='' history 1 2>/dev/null)
+        histno=$(printf '%s\n' "$last_history_line" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+        if [ -z "$histno" ]; then
+            return
+        fi
+        if [ "$histno" = "$_ICOMMAND_LAST_HISTNO" ]; then
+            return
+        fi
+        _ICOMMAND_LAST_HISTNO="$histno"
+        last_cmd=$(printf '%s\n' "$last_history_line" | sed 's/^[ ]*[0-9]*[ ]*//')
         _icommand_capture "$last_cmd"
     }
+
+    _icommand_seed_bash_history_state
 
     # Append to PROMPT_COMMAND so we don't clobber existing hooks
     if [ -z "$PROMPT_COMMAND" ]; then
@@ -61,17 +80,16 @@ if [ -n "$ZSH_VERSION" ]; then
     # precmd: fires just AFTER a command finishes, BEFORE the next prompt
     _icommand_precmd() {
         local exit_code=$?
-        local cmd
-
-        if [ -n "$_ICOMMAND_PENDING_CMD" ]; then
-            # Happy path: preexec fired and gave us the command directly
-            cmd="$_ICOMMAND_PENDING_CMD"
-        else
-            # Fallback: user pressed Enter on empty line or preexec didn't fire
-            cmd=$(fc -ln -1 2>/dev/null | sed 's/^[ ]*//')
-        fi
+        local cmd="$_ICOMMAND_PENDING_CMD"
 
         _ICOMMAND_PENDING_CMD=""
+
+        # Only capture real commands that passed through preexec.
+        # Do not fall back to shell history here, or shell startup / prompt redraws
+        # can replay stale commands as if they were just executed.
+        if [ -z "$cmd" ]; then
+            return
+        fi
 
         _icommand_capture "$cmd" "$exit_code"
     }
