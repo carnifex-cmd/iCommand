@@ -431,7 +431,7 @@ class ICommandApp(App):
         self._visible_limit = 0
         self._has_more_results = False
         self._loading_more = False
-        self._closing = False
+        self._is_exiting = False
         self._request_generation = 0
         self._result_mode = "recent"
         self.query_one("#search-input", Input).focus()
@@ -466,7 +466,7 @@ class ICommandApp(App):
 
     def _after_sync(self, sync_result) -> None:
         """Called on the main thread after sync completes."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         self._syncing = False
         self._refresh_count(sync_result)
@@ -478,7 +478,7 @@ class ICommandApp(App):
 
     def _refresh_count(self, sync_result=None) -> None:
         """Update the header command count display."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         from icommand.db import get_command_count
         from icommand.vector_index import get_vector_index
@@ -535,7 +535,7 @@ class ICommandApp(App):
 
     def _run_search(self, query: str) -> None:
         """Start a new paged search or recent-history load."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         generation = self._request_generation + 1
         self._request_generation = generation
@@ -636,7 +636,7 @@ class ICommandApp(App):
 
     def _refresh_footer(self) -> None:
         """Update the footer hint based on load-more availability."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         footer = _FOOTER_BASE
         if self._can_load_more():
@@ -648,7 +648,7 @@ class ICommandApp(App):
 
     def _render_results(self, preferred_index: Optional[int] = None) -> None:
         """Rebuild the visible results list from the loaded result set."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         try:
             list_view = self.query_one("#results-list", ListView)
@@ -707,7 +707,7 @@ class ICommandApp(App):
 
     def _apply_fetched_results(self, response: ResultsFetched) -> None:
         """Apply a background fetch response if it still matches the active query."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         if response.generation != self._request_generation:
             return
@@ -731,7 +731,7 @@ class ICommandApp(App):
 
     def _request_more_results(self, current_index: int) -> None:
         """Reveal more results, fetching another page if needed."""
-        if self._closing or not self.is_mounted:
+        if self._is_exiting or not self.is_mounted:
             return
         if self._loading_more:
             return
@@ -846,7 +846,8 @@ class ICommandApp(App):
         self._request_more_results(event.index)
 
     def action_quit(self) -> None:
-        self._closing = True
+        # Avoid Textual's internal MessagePump._closing flag name; exit() posts ExitApp.
+        self._is_exiting = True
         self._request_generation += 1
         if self._debounce_task and not self._debounce_task.done():
             self._debounce_task.cancel()
