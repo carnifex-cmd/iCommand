@@ -195,17 +195,6 @@ The local embedding model is downloaded and cached separately by Hugging Face to
 
 - `~/.cache/huggingface/hub`
 
-## Limitations
-
-This README describes the current behavior, not the ideal end state.
-
-- Only Bash and Zsh hook installation are supported.
-- Only the local embedding provider is implemented.
-- Conversational `ask` is not available yet.
-- Search freshness in a long-running TUI session can lag behind newly captured commands until the next sync or app restart.
-- The uninstall flow is mostly clean, but it is not yet guaranteed to remove every possible residue from every installation method.
-- Older history outside the semantic hot window remains retained for keyword search, but not all retained history stays semantically indexed.
-
 ## Development
 
 Clone the repo and install it locally with `pipx`:
