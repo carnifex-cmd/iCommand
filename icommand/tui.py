@@ -61,6 +61,7 @@ class ResultsFetched(Message):
         has_more: bool,
         append: bool,
         desired_visible_limit: int,
+        messages: Optional[list[str]] = None,
         preferred_index: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -71,6 +72,7 @@ class ResultsFetched(Message):
         self.has_more = has_more
         self.append = append
         self.desired_visible_limit = desired_visible_limit
+        self.messages = messages or []
         self.preferred_index = preferred_index
 
 
@@ -432,6 +434,7 @@ class ICommandApp(App):
         self._has_more_results = False
         self._loading_more = False
         self._is_exiting = False
+        self._shown_notices: set[str] = set()
         self._request_generation = 0
         self._result_mode = "recent"
         self.query_one("#search-input", Input).focus()
@@ -472,6 +475,9 @@ class ICommandApp(App):
         self._refresh_count(sync_result)
         if sync_result is not None:
             for message in sync_result.messages[:2]:
+                if message in self._shown_notices:
+                    continue
+                self._shown_notices.add(message)
                 self.notify(message, timeout=3.0)
         # Show initial results (browse mode with empty query)
         self._run_search(self._query)
@@ -586,11 +592,13 @@ class ICommandApp(App):
     ) -> None:
         """Fetch one results page in the background and post it to the UI thread."""
         from icommand.db import get_recent_commands
-        from icommand.search import SearchResult, search as do_search
+        from icommand.search import SearchResult, search_with_messages
 
         try:
             if mode == "search":
-                results = do_search(query, limit)
+                outcome = search_with_messages(query, limit)
+                results = outcome.results
+                messages = outcome.messages
                 has_more = len(results) >= limit and limit < TUI_FETCH_LIMIT
             else:
                 rows = get_recent_commands(limit=limit, offset=offset)
@@ -605,9 +613,11 @@ class ICommandApp(App):
                 ]
                 total_loaded = offset + len(results)
                 has_more = len(results) >= limit and total_loaded < TUI_FETCH_LIMIT
+                messages = []
         except Exception:
             results = []
             has_more = False
+            messages = ["search failed; showing no results for this query"]
 
         self.post_message(
             ResultsFetched(
@@ -618,6 +628,7 @@ class ICommandApp(App):
                 has_more=has_more,
                 append=append,
                 desired_visible_limit=desired_visible_limit,
+                messages=messages,
                 preferred_index=preferred_index,
             )
         )
@@ -715,6 +726,12 @@ class ICommandApp(App):
             return
         if response.mode != self._result_mode:
             return
+
+        for message in response.messages:
+            if message in self._shown_notices:
+                continue
+            self._shown_notices.add(message)
+            self.notify(message, timeout=4.0)
 
         self._loading_more = False
         if response.append:

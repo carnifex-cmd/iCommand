@@ -22,7 +22,7 @@ from icommand.db import (
     keyword_search,
     mark_embedded,
 )
-from icommand.embeddings import get_provider
+from icommand.embeddings import get_provider, is_provider_implemented
 from icommand.maintenance import get_hot_floor_id, get_storage_usage_bytes, run_maintenance
 from icommand.vector_index import CURRENT_MODEL, get_vector_index, is_faiss_available
 
@@ -104,6 +104,27 @@ class SyncResult:
     embedding_paused: bool
     show_prune_notice: bool = False
     messages: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SearchOutcome:
+    """Search results plus any non-fatal notices shown to the user."""
+
+    results: list[SearchResult]
+    messages: list[str] = field(default_factory=list)
+
+
+def _semantic_unavailable_message(provider_name: str, detail: Optional[str] = None) -> str:
+    """Build a short user-facing semantic-search fallback message."""
+    if detail:
+        return (
+            f"semantic search unavailable for provider '{provider_name}'; "
+            f"using keyword matches only ({detail})"
+        )
+    return (
+        f"semantic search unavailable for provider '{provider_name}'; "
+        "using keyword matches only"
+    )
 
 
 def _rebuild_index(hot_floor_id: int) -> int:
@@ -280,6 +301,7 @@ def sync() -> SyncResult:
     """Run maintenance, embed hot-window commands, and keep the index current."""
     config = load_config()
     maintenance = run_maintenance(config, model_name=CURRENT_MODEL)
+    semantic_notice: Optional[str] = None
 
     stale_count = clear_stale_embeddings(CURRENT_MODEL)
     if stale_count > 0:
@@ -307,7 +329,13 @@ def sync() -> SyncResult:
     rebuild_marked = maintenance.rebuild_required or stale_count > 0
     provider = None
 
-    while not maintenance.embedding_paused:
+    if not is_provider_implemented(config.provider):
+        semantic_notice = _semantic_unavailable_message(
+            config.provider,
+            "provider is not implemented",
+        )
+
+    while semantic_notice is None and not maintenance.embedding_paused:
         batch = get_unembedded_commands_for_hot_window(
             maintenance.hot_floor_id,
             EMBED_BATCH_SIZE,
@@ -315,14 +343,20 @@ def sync() -> SyncResult:
         if not batch:
             break
 
-        if provider is None:
-            provider = get_provider(config.provider)
+        try:
+            if provider is None:
+                provider = get_provider(config.provider)
 
-        texts = [command["command"] for command in batch]
-        embeddings = [
-            np.array(embedding, dtype=np.float32)
-            for embedding in provider.embed_documents(texts)
-        ]
+            texts = [command["command"] for command in batch]
+            embeddings = [
+                np.array(embedding, dtype=np.float32)
+                for embedding in provider.embed_documents(texts)
+            ]
+        except Exception as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            semantic_notice = _semantic_unavailable_message(config.provider, detail)
+            break
+
         ids = [command["id"] for command in batch]
 
         if can_incrementally_update:
@@ -364,7 +398,9 @@ def sync() -> SyncResult:
             )
 
     indexed_commands = 0
-    if is_faiss_available():
+    if semantic_notice is not None:
+        maintenance.messages.append(semantic_notice)
+    elif is_faiss_available():
         if rebuild_needed:
             indexed_commands = _rebuild_index(maintenance.hot_floor_id)
         else:
@@ -375,6 +411,7 @@ def sync() -> SyncResult:
         or stale_count > 0
         or maintenance.pruned_rows > 0
         or maintenance.cold_embeddings_cleared > 0
+        or semantic_notice is not None
     ):
         invalidate_search_cache()
 
@@ -389,47 +426,70 @@ def sync() -> SyncResult:
     )
 
 
-def search(query: str, max_results: int = 10, use_cache: bool = True) -> list[SearchResult]:
-    """Search command history using exact-first hybrid ranking."""
+def search_with_messages(
+    query: str,
+    max_results: int = 10,
+    use_cache: bool = True,
+) -> SearchOutcome:
+    """Search command history and return any non-fatal fallback notices."""
     normalized_query = query.strip()
     if not normalized_query:
-        return []
+        return SearchOutcome(results=[])
 
-    if use_cache:
+    config = load_config()
+    semantic_enabled = is_provider_implemented(config.provider)
+
+    if use_cache and semantic_enabled:
         cached = _search_cache.get(normalized_query, max_results)
         if cached is not None:
-            return cached
+            return SearchOutcome(results=cached)
 
     keyword_results = _build_keyword_results(normalized_query, max_results)
     if _is_keyword_only_query(normalized_query):
-        if use_cache:
+        if use_cache and semantic_enabled:
             _search_cache.set(normalized_query, max_results, keyword_results)
-        return keyword_results
+        return SearchOutcome(results=keyword_results)
     if len(keyword_results) >= max_results:
-        if use_cache:
+        if use_cache and semantic_enabled:
             _search_cache.set(normalized_query, max_results, keyword_results)
-        return keyword_results
+        return SearchOutcome(results=keyword_results)
 
-    config = load_config()
+    if not semantic_enabled:
+        return SearchOutcome(
+            results=keyword_results,
+            messages=[
+                _semantic_unavailable_message(
+                    config.provider,
+                    "provider is not implemented",
+                )
+            ],
+        )
+
     hot_floor_id = get_hot_floor_id(
         get_max_command_id(),
         config.semantic_command_limit,
     )
 
     semantic_results: list[SearchResult]
+    messages: list[str] = []
     if is_faiss_available():
         indexed_count = _ensure_index_ready(hot_floor_id)
         if indexed_count > 0:
-            provider = get_provider(config.provider)
-            query_vec = np.array(
-                provider.embed_queries([normalized_query])[0],
-                dtype=np.float32,
-            )
-            semantic_results = _ann_search(
-                query_vec,
-                max_results * SEMANTIC_FILL_MULTIPLIER,
-                hot_floor_id,
-            )
+            try:
+                provider = get_provider(config.provider)
+                query_vec = np.array(
+                    provider.embed_queries([normalized_query])[0],
+                    dtype=np.float32,
+                )
+                semantic_results = _ann_search(
+                    query_vec,
+                    max_results * SEMANTIC_FILL_MULTIPLIER,
+                    hot_floor_id,
+                )
+            except Exception as exc:
+                detail = str(exc).strip() or exc.__class__.__name__
+                messages.append(_semantic_unavailable_message(config.provider, detail))
+                semantic_results = []
         else:
             semantic_results = []
     else:
@@ -442,9 +502,14 @@ def search(query: str, max_results: int = 10, use_cache: bool = True) -> list[Se
     else:
         results = []
 
-    if use_cache:
+    if use_cache and not messages:
         _search_cache.set(normalized_query, max_results, results)
-    return results
+    return SearchOutcome(results=results, messages=messages)
+
+
+def search(query: str, max_results: int = 10, use_cache: bool = True) -> list[SearchResult]:
+    """Search command history using exact-first hybrid ranking."""
+    return search_with_messages(query, max_results=max_results, use_cache=use_cache).results
 
 
 def conversational_search(query: str, max_results: int = 10) -> SearchResult:

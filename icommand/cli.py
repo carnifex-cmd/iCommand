@@ -9,9 +9,10 @@ from pathlib import Path
 
 import click
 
+from icommand.embeddings import get_implemented_provider_names
 from icommand.config import get_config_path, get_icommand_dir, load_config, save_config, Config
 from icommand.db import init_db
-from icommand.search import search as do_search
+from icommand.search import search_with_messages
 from icommand.search import sync
 
 
@@ -77,6 +78,12 @@ def _echo_sync_status(result) -> None:
         f"  ·  {_format_bytes(result.storage_usage_bytes)} local"
     )
     for message in result.messages:
+        click.echo(f"  notice   {message}")
+
+
+def _echo_search_notices(messages: list[str]) -> None:
+    """Show non-fatal search notices."""
+    for message in messages:
         click.echo(f"  notice   {message}")
 
 
@@ -156,9 +163,10 @@ def init():
     # Append hook to shell rc files
     hook_line = _get_hook_source_line()
     hook_path = _get_hook_path()
+    hook_installed = False
 
     if not hook_path.exists():
-        click.echo(f"  warning  hook not found at {hook_path}", err=True)
+        click.echo(f"  error    hook not found at {hook_path}", err=True)
     else:
         for rc_name in [".bashrc", ".zshrc"]:
             rc_path = Path.home() / rc_name
@@ -170,6 +178,15 @@ def init():
                     click.echo(f"  hook     appended to ~/{rc_name}")
                 else:
                     click.echo(f"  hook     ~/{rc_name} (already present)")
+                hook_installed = True
+
+    if not hook_installed:
+        click.echo()
+        click.echo("  error    shell hook was not installed", err=True)
+        click.echo("  manual   add this line to ~/.zshrc or ~/.bashrc:", err=True)
+        click.echo(f'           source "{hook_path}"', err=True)
+        click.echo("  note     init only updates existing shell rc files.", err=True)
+        raise click.exceptions.Exit(1)
 
     click.echo()
     click.echo("  ready.")
@@ -184,21 +201,36 @@ def init():
 def search(query: str):
     """Semantically search your command history."""
     config = load_config()
+    seen_notices: set[str] = set()
 
     click.echo("syncing...", nl=False)
-    sync_result = sync()
-    if sync_result.synced_commands > 0:
-        click.echo(
-            f" {sync_result.synced_commands} command"
-            f"{'s' if sync_result.synced_commands != 1 else ''} synced."
-        )
+    try:
+        sync_result = sync()
+    except Exception as exc:
+        click.echo(" failed.")
+        fallback_notice = f"semantic sync unavailable: {exc}"
+        click.echo(f"  notice   {fallback_notice}")
+        seen_notices.add(fallback_notice)
     else:
-        click.echo(" up to date.")
-    _echo_sync_status(sync_result)
+        if sync_result.synced_commands > 0:
+            click.echo(
+                f" {sync_result.synced_commands} command"
+                f"{'s' if sync_result.synced_commands != 1 else ''} synced."
+            )
+        else:
+            click.echo(" up to date.")
+        _echo_sync_status(sync_result)
+        seen_notices.update(sync_result.messages)
 
     click.echo()
 
-    results = do_search(query, config.max_results)
+    outcome = search_with_messages(query, config.max_results)
+    fresh_notices = [message for message in outcome.messages if message not in seen_notices]
+    _echo_search_notices(fresh_notices)
+    if fresh_notices:
+        click.echo()
+
+    results = outcome.results
 
     if not results:
         click.echo("No matching commands found.")
@@ -346,18 +378,6 @@ def uninstall():
         shutil.rmtree(icommand_dir)
         click.echo(f"  removed  {icommand_dir}")
 
-    # Remove cached ONNX models from HuggingFace hub (~86MB each)
-    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
-    _HF_MODEL_DIRS = [
-        "models--Snowflake--snowflake-arctic-embed-xs",      # current model
-        "models--sentence-transformers--all-MiniLM-L6-v2",   # legacy model
-    ]
-    for model_dir in _HF_MODEL_DIRS:
-        model_path = hf_cache / model_dir
-        if model_path.exists():
-            shutil.rmtree(model_path)
-            click.echo(f"  cache    removed {model_dir}")
-
     # Remove the binary — prefer pipx, fall back to pip
     import subprocess, sys
     pipx = shutil.which("pipx")
@@ -401,7 +421,7 @@ def config(key, value, reset):
     Available settings:
         max_results       Maximum number of search results (default: 10)
         tui_max_results   Number of results to show in TUI (default: 5, max: 20)
-        provider          Embedding provider: local (Arctic Embed XS), openai, anthropic, ollama (default: local)
+        provider          Embedding provider: local (Arctic Embed XS) (default: local)
         storage_soft_limit_mb   Soft cap for ~/.icommand data (default: 1024)
         storage_hard_limit_mb   Hard cap for ~/.icommand data (default: 2048)
         live_command_limit      Max commands retained locally (default: 1000000)
@@ -489,6 +509,14 @@ def config(key, value, reset):
         except ValueError:
             click.echo(f"Error: {key} must be a number", err=True)
             return
+    elif key == "provider":
+        supported = get_implemented_provider_names()
+        if value not in supported:
+            click.echo(
+                f"Error: provider must be one of: {', '.join(supported)}",
+                err=True,
+            )
+            raise click.exceptions.Exit(1)
     
     setattr(cfg, key, value)
     if cfg.storage_soft_limit_mb > cfg.storage_hard_limit_mb:

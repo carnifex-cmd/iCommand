@@ -186,6 +186,18 @@ _PROVIDERS: dict[str, type[EmbeddingProvider]] = {
     "ollama": OllamaProvider,
 }
 
+_IMPLEMENTED_PROVIDERS = frozenset({"local"})
+
+
+def is_provider_implemented(name: str) -> bool:
+    """Return whether the embedding provider is implemented for end users."""
+    return name in _IMPLEMENTED_PROVIDERS
+
+
+def get_implemented_provider_names() -> tuple[str, ...]:
+    """Return the user-facing list of implemented embedding providers."""
+    return tuple(sorted(_IMPLEMENTED_PROVIDERS))
+
 
 def get_provider(name: str) -> EmbeddingProvider:
     """Get an embedding provider instance by name."""
