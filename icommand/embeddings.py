@@ -27,6 +27,30 @@ _TOKENIZER_FILE = "tokenizer.json"
 _QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
+def _get_hf_hub_cache_dir() -> Path:
+    """Return the Hugging Face Hub cache directory for the current environment."""
+    if cache_dir := os.environ.get("HF_HUB_CACHE"):
+        return Path(cache_dir).expanduser()
+    if hf_home := os.environ.get("HF_HOME"):
+        return Path(hf_home).expanduser() / "hub"
+    if xdg_cache := os.environ.get("XDG_CACHE_HOME"):
+        return Path(xdg_cache).expanduser() / "huggingface" / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def get_local_model_cache_dir() -> Optional[Path]:
+    """Return the cached Hugging Face repo directory for iCommand's local model."""
+    try:
+        from huggingface_hub.file_download import repo_folder_name
+
+        repo_dir_name = repo_folder_name(repo_id=_ONNX_MODEL_REPO, repo_type="model")
+    except Exception:
+        repo_dir_name = f"models--{_ONNX_MODEL_REPO.replace('/', '--')}"
+
+    repo_cache_dir = _get_hf_hub_cache_dir() / repo_dir_name
+    return repo_cache_dir if repo_cache_dir.is_dir() else None
+
+
 class EmbeddingProvider(ABC):
     """Base class for all embedding providers."""
 

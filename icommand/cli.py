@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from icommand.embeddings import get_implemented_provider_names
+from icommand.embeddings import get_implemented_provider_names, get_local_model_cache_dir
 from icommand.config import get_config_path, get_icommand_dir, load_config, save_config, Config
 from icommand.db import init_db
 from icommand.search import search_with_messages
@@ -342,11 +342,12 @@ def import_history(limit: int, history_file):
 
 @cli.command()
 def uninstall():
-    """Fully remove icommand: data, shell hooks, and the binary."""
-    icommand_dir = get_icommand_dir()
+    """Fully remove icommand: data, local model cache, shell hooks, and the binary."""
+    icommand_dir = Path.home() / ".icommand"
+    model_cache_dir = get_local_model_cache_dir()
 
     if not click.confirm(
-        "This will remove the icommand binary, all data, and shell hooks. Continue?"
+        "This will remove the icommand binary, local model cache, all data, and shell hooks. Continue?"
     ):
         click.echo("Cancelled.")
         return
@@ -377,6 +378,14 @@ def uninstall():
     if icommand_dir.exists():
         shutil.rmtree(icommand_dir)
         click.echo(f"  removed  {icommand_dir}")
+
+    # Remove the cached local embedding model repo from Hugging Face Hub cache
+    if model_cache_dir is not None:
+        try:
+            shutil.rmtree(model_cache_dir)
+            click.echo(f"  model    removed {model_cache_dir}")
+        except OSError as exc:
+            click.echo(f"  warning  failed to remove local model cache: {exc}", err=True)
 
     # Remove the binary — prefer pipx, fall back to pip
     import subprocess, sys
