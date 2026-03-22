@@ -16,6 +16,7 @@ import numpy as np
 # downloaded once and cached locally; no token is needed for public models.
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 # ONNX model identifier on Hugging Face Hub
